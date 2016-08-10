@@ -1,64 +1,101 @@
-// todo.js
+import Redis from 'ioredis';
+import async from 'async';
 
-let listId = 4;
-const lists = [
-  { id: 0, label: 'test1' },
-  { id: 1, label: 'test2' },
-  { id: 2, label: 'test3' },
-  { id: 3, label: 'test4' },
-];
+const redis = new Redis();
 
-let taskId = 3;
-const tasks = [
-  { id: 0, listId: 0, description: 'yata' },
-  { id: 1, listId: 0, description: 'yo' },
-  { id: 2, listId: 2, description: 'yeah' },
-];
+redis.exists('listId', (err, exist) => {
+  if (!exist) redis.set('listId', 0);
+});
+redis.exists('taskId', (err, exist) => {
+  if (!exist) redis.set('taskId', 0);
+});
+
+const smembers = key => cb => redis.smembers(key, cb);
+const hgetall = key => (id, cb) => redis.hgetall(`${key}:${id}`, cb);
+const get = key => cb => redis.get(key, cb);
+const srem = (key, member) => cb => redis.srem(key, member, cb);
+const hdel = (key, fields) => cb => redis.hdel(key, fields, cb);
+
+const getList = (id, cb) => hgetall('list')(id, cb);
+const getTask = (id, cb) => hgetall('task')(id, cb);
+const getLists = (ids, cb) => async.map(ids, getList, cb);
+const getTasks = (ids, cb) => async.map(ids, getTask, cb);
+const setList = label => (id, cb) =>
+  redis.hmset(`list:${id}`, { id, label }, (e, r) => {
+    redis.sadd('lists', id);
+    cb(e, id);
+});
+const setTask = (listId, description) => (id, cb) =>
+  redis.hmset(`task:${id}`, { id, listId, description }, (e, r) => {
+    redis.sadd('tasks', id);
+    cb(e, id);
+});
 
 export const init = (app) => {
+
   app.get('/todo/lists', (req, res) => {
-    // TODO: get lists from redis
-    res.json(lists);
+    async.waterfall([
+      smembers('lists'),
+      getLists,
+    ], (err, result) => {
+      if (err) res.json({ error: err });
+      res.json(result);
+    });
   });
 
   app.post('/todo/lists', (req, res) => {
-    const newList = { id: listId, label: req.body.todo.label };
-    listId = listId + 1;
-    // TODO: add newList to redis
-    res.json(newList);
-  });
-
-  app.put('/todo/list/:id', (req, res) => {
-    console.log('PUT /todo/list/:id');
+    async.waterfall([
+      get('listId'),
+      setList(req.body.todo.label),
+      getList,
+    ], (err, result) => {
+      if (err) res.json({ error: err });
+      redis.incr('listId');
+      res.json(result);
+    });
   });
 
   app.delete('/todo/list/:id', (req, res) => {
-    // TODO: remove list from redis
-    res.json({ id: req.params.id, isDeleted: true });
+    const { id } = req.params;
+    async.series([
+      srem('lists', id),
+      hdel(`list:${id}`, ['id', 'label']),
+    ], (err, result) => {
+      if (err) res.json({ error: err });
+      res.json({ id, isDeleted: true });
+    });
   });
 
   app.get('/todo/tasks', (req, res) => {
-    res.json(tasks);
+    async.waterfall([
+      smembers('tasks'),
+      getTasks,
+    ], (err, result) => {
+      if (err) res.json({ error: err });
+      res.json(result);
+    });
   });
 
   app.post('/todo/tasks', (req, res) => {
-    const newTask = {
-      id: taskId,
-      listId: req.body.task.listId,
-      description: req.body.task.description,
-    };
-    taskId = taskId + 1;
-    // TODO: add newTask to redis
-    console.log(newTask);
-    res.json(newTask);
-  });
-
-  app.put('/todo/task/:id', (req, res) => {
-    console.log('PUT /todo/task/:id');
+    async.waterfall([
+      get('taskId'),
+      setTask(req.body.task.listId, req.body.task.description),
+      getTask,
+    ], (err, result) => {
+      if (err) res.json({ error: err });
+      redis.incr('taskId');
+      res.json(result);
+    });
   });
 
   app.delete('/todo/task/:id', (req, res) => {
-    // TODO: remove task from redis
-    res.json({ id: req.params.id, isDeleted: true });
+    const { id } = req.params;
+    async.series([
+      srem('tasks', id),
+      hdel(`task:${id}`, ['id', 'listId', 'description']),
+    ], (err, result) => {
+      if (err) res.json({ error: err });
+      res.json({ id, isDeleted: true });
+    });
   });
 }
